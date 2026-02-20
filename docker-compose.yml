@@ -1,0 +1,60 @@
+services:
+  next-app:
+    build:
+      context: ./next-app
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - WEAVIATE_URL=http://weaviate:8080
+      - WEAVIATE_API_KEY=my-secret-weaviate-key-2024
+      - TEI_URL=http://tei:80
+    depends_on:
+      weaviate:
+        condition: service_healthy
+      tei:
+        condition: service_started
+    restart: unless-stopped
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.28.2
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-weaviate-key-2024"
+      AUTHENTICATION_APIKEY_USERS: "admin@weaviate.local"
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: "admin@weaviate.local"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      DEFAULT_VECTORIZER_MODULE: "none"
+      CLUSTER_HOSTNAME: "node1"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.2
+    command: --model-id sentence-transformers/all-MiniLM-L6-v2 --port 80
+    ports:
+      - "8081:80"
+    volumes:
+      - tei_cache:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  weaviate_data:
+  tei_cache:
