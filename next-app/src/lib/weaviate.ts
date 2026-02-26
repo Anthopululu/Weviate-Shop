@@ -1,20 +1,8 @@
 const WEAVIATE_URL = process.env.WEAVIATE_URL || "http://localhost:8080";
 const WEAVIATE_API_KEY = process.env.WEAVIATE_API_KEY || "my-secret-weaviate-key-2024";
-const TEI_URL = process.env.TEI_URL || "http://localhost:8081";
 
 function esc(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-export async function teiEmbed(text: string): Promise<number[]> {
-  const res = await fetch(`${TEI_URL}/embed`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ inputs: text }),
-  });
-  if (!res.ok) throw new Error(`TEI error: ${res.status}`);
-  const result = await res.json();
-  return Array.isArray(result[0]) ? result[0] : result;
 }
 
 export async function weaviateGraphQL(query: string) {
@@ -63,7 +51,6 @@ interface SearchFilters {
 export function buildSearchQuery(
   queryText: string,
   mode: string,
-  vector: number[] | null,
   filters: SearchFilters,
   limit: number
 ): string {
@@ -72,15 +59,11 @@ export function buildSearchQuery(
 
   if (mode === "bm25") {
     searchClause = `bm25: { query: "${esc(queryText)}" }`;
-  } else if (mode === "vector" && vector) {
-    const vecStr = vector.join(", ");
-    searchClause = `nearVector: { vector: [${vecStr}] }`;
+  } else if (mode === "vector") {
+    searchClause = `nearText: { concepts: ["${esc(queryText)}"] }`;
   } else {
     // hybrid or hybrid_filtered
-    const vecStr = vector ? vector.join(", ") : "";
-    searchClause = vector
-      ? `hybrid: { query: "${esc(queryText)}", vector: [${vecStr}] }`
-      : `hybrid: { query: "${esc(queryText)}" }`;
+    searchClause = `hybrid: { query: "${esc(queryText)}" }`;
   }
 
   if (mode === "hybrid_filtered" && filters) {

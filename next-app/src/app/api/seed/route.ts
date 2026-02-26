@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { teiEmbed, weaviateREST } from "@/lib/weaviate";
+import { weaviateREST } from "@/lib/weaviate";
 import { PRODUCTS } from "@/lib/products";
 
 export async function POST() {
@@ -11,14 +11,19 @@ export async function POST() {
       // Collection might not exist, that's fine
     }
 
-    // Create Product collection
+    // Create Product collection with text2vec-transformers vectorizer
     await weaviateREST("/v1/schema", {
       method: "POST",
       body: JSON.stringify({
         class: "Product",
-        vectorizer: "none",
+        vectorizer: "text2vec-transformers",
         vectorIndexConfig: {
           distance: "cosine",
+        },
+        moduleConfig: {
+          "text2vec-transformers": {
+            vectorizeClassName: false,
+          },
         },
         properties: [
           { name: "name", dataType: ["text"] },
@@ -30,18 +35,18 @@ export async function POST() {
             dataType: ["number"],
             indexFilterable: true,
             indexRangeFilterable: true,
+            moduleConfig: {
+              "text2vec-transformers": { skip: true },
+            },
           },
           { name: "description", dataType: ["text"] },
         ],
       }),
     });
 
-    // Generate embeddings and insert products
+    // Insert products — Weaviate vectorizes automatically at ingestion
     let inserted = 0;
     for (const product of PRODUCTS) {
-      const text = `${product.name} ${product.brand} ${product.color} ${product.category} ${product.description}`;
-      const vector = await teiEmbed(text);
-
       await weaviateREST("/v1/objects", {
         method: "POST",
         body: JSON.stringify({
@@ -54,7 +59,6 @@ export async function POST() {
             price: product.price,
             description: product.description,
           },
-          vector,
         }),
       });
       inserted++;

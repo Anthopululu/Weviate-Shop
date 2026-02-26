@@ -61,12 +61,17 @@ function getColorHex(colorName: string | undefined) {
 }
 
 const PRICE_RE = /\s*(?:below|under|less than|<|sous|moins de)\s*\$?(\d+)/i;
+const KNOWN_COLORS = ["black","white","silver","gray","grey","red","blue","green","yellow","orange","purple","pink","gold","rose gold","brown","navy","teal","midnight","space gray","starlight","graphite","sky blue","bay blue","titanium"];
+const COLOR_RE = new RegExp(`\\b(${KNOWN_COLORS.join("|")})\\b`, "i");
 
 function parseQuery(raw: string) {
   const priceMatch = raw.match(PRICE_RE);
   const price = priceMatch ? parseInt(priceMatch[1]) : null;
-  const clean = raw.replace(PRICE_RE, "").trim();
-  return { clean, price };
+  let cleaned = raw.replace(PRICE_RE, "").trim();
+  const colorMatch = cleaned.match(COLOR_RE);
+  const color = colorMatch ? colorMatch[1].charAt(0).toUpperCase() + colorMatch[1].slice(1).toLowerCase() : null;
+  if (color) cleaned = cleaned.replace(COLOR_RE, "").replace(/\s+/g, " ").trim();
+  return { clean: cleaned, price, color };
 }
 
 // ─── Background Canvas ──────────────────────────────────────────────
@@ -187,6 +192,12 @@ export default function Home() {
   const [page, setPage] = useState<"shop" | "checkout" | "confirmation">("shop");
   const [orderNumber, setOrderNumber] = useState("");
   const [seeding, setSeeding] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: string; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const [seedMsg, setSeedMsg] = useState("");
   const hasSearched = useRef(false);
 
@@ -217,17 +228,18 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const { clean, price } = parseQuery(query);
+  const { clean, price, color } = parseQuery(query);
 
   const runSearch = useCallback(async () => {
     hasSearched.current = true;
     setLoading(true);
     setError("");
-    const { clean: q, price: p } = parseQuery(query);
+    const { clean: q, price: p, color: c } = parseQuery(query);
     const mode = smartMode ? "hybrid_filtered" : "hybrid";
     const filters: Record<string, unknown> = {};
     const searchQuery = smartMode ? q : query;
     if (smartMode && p) filters.price = p;
+    if (smartMode && c) filters.color = c;
 
     const start = performance.now();
     try {
@@ -249,6 +261,15 @@ export default function Home() {
       setLoading(false);
     }
   }, [query, smartMode]);
+
+  // Re-run search when toggling Smart mode (if a search was already done)
+  useEffect(() => {
+    setShowHidden(false);
+    if (hasSearched.current) {
+      runSearch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smartMode]);
 
   const handleSeed = async () => {
     setSeeding(true);
@@ -300,7 +321,45 @@ export default function Home() {
     setCart([]);
   };
 
+  // Chat helpers
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg = { role: "user", content: chatInput.trim() };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userMsg.content, history: chatMessages }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setChatMessages((prev) => [...prev, { role: "assistant", content: `Error: ${data.error}` }]);
+      } else {
+        setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      }
+    } catch {
+      setChatMessages((prev) => [...prev, { role: "assistant", content: "Failed to connect." }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, chatLoading]);
+
   const priceThreshold = price || 500;
+  const RELEVANCE_THRESHOLD = 0.7;
+  const displayProducts = smartMode
+    ? products.filter((p) => {
+        const s = parseFloat(p._additional?.score || "0");
+        return s >= RELEVANCE_THRESHOLD;
+      })
+    : products;
+  const filteredOutCount = products.length - displayProducts.length;
 
   return (
     <>
@@ -386,7 +445,10 @@ export default function Home() {
                 {smartMode ? (
                   <>
                     <span className="text-wv-green">&quot;{clean}&quot;</span>
-                    {price && (<><span className="text-gray-500"> | Filter: </span><span className="text-wv-green">price &lt; ${price}</span></>)}
+                    {(price || color) && (<span className="text-gray-500"> | Filter: </span>)}
+                    {color && (<span className="text-wv-green">color = {color}</span>)}
+                    {color && price && (<span className="text-gray-500">, </span>)}
+                    {price && (<span className="text-wv-green">price &lt; ${price}</span>)}
                   </>
                 ) : (
                   <span className="text-red-400">&quot;{query}&quot;</span>
@@ -518,9 +580,12 @@ export default function Home() {
                       <span className="text-sm font-semibold text-white">
                         {smartMode ? "Smart Search results" : "Search results"}
                       </span>
-                      {latency !== null && products.length > 0 && (
+                      {latency !== null && displayProducts.length > 0 && (
                         <span className="text-[11px] font-mono text-wv-muted ml-3">
-                          {latency}ms &middot; {products.length} results
+                          {latency}ms &middot; {displayProducts.length} results
+                          {smartMode && filteredOutCount > 0 && (
+                            <span className="text-gray-600"> ({filteredOutCount} low-relevance hidden)</span>
+                          )}
                         </span>
                       )}
                     </div>
@@ -543,59 +608,147 @@ export default function Home() {
                     <div className="text-xs text-red-400 p-4 bg-red-500/10 rounded-lg">{error}</div>
                   ) : loading ? (
                     <div className="text-sm text-wv-muted text-center py-12" style={{ animation: "pulse 1s infinite" }}>Searching...</div>
-                  ) : products.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {products.map((p, i) => {
-                        const score = p._additional?.score || p._additional?.distance || "";
-                        const scoreLabel = p._additional?.score ? "relevance" : p._additional?.distance ? "distance" : "";
-                        const scoreValue = score ? parseFloat(score).toFixed(4) : "";
-                        const isRelevant = p.price < priceThreshold;
-                        const borderClass = smartMode ? "relevant" : isRelevant ? "" : "irrelevant";
+                  ) : displayProducts.length > 0 ? (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {displayProducts.map((p, i) => {
+                          const score = p._additional?.score || p._additional?.distance || "";
+                          const scoreLabel = p._additional?.score ? "relevance" : p._additional?.distance ? "distance" : "";
+                          const scoreValue = score ? parseFloat(score).toFixed(4) : "";
+                          const isRelevant = p.price < priceThreshold;
+                          const borderClass = smartMode ? "relevant" : isRelevant ? "" : "irrelevant";
 
-                        return (
-                          <div
-                            key={i}
-                            className={`product-card bg-wv-card rounded-xl p-4 border border-wv-border ${borderClass} fade-in cursor-pointer`}
-                            style={{ animationDelay: `${i * 50}ms` }}
-                            onClick={() => setModalProduct(p)}
-                          >
-                            <div className="flex items-start justify-between mb-3">
-                              <div className="text-3xl">{getEmoji(p.category)}</div>
-                              {scoreValue && (
-                                <div className="px-2 py-0.5 bg-wv-dark rounded-full text-[10px] font-mono text-wv-muted">
-                                  {scoreLabel}: {scoreValue}
+                          return (
+                            <div
+                              key={i}
+                              className={`product-card bg-wv-card rounded-xl p-4 border border-wv-border ${borderClass} fade-in cursor-pointer`}
+                              style={{ animationDelay: `${i * 50}ms` }}
+                              onClick={() => setModalProduct(p)}
+                            >
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="text-3xl">{getEmoji(p.category)}</div>
+                                {scoreValue && (
+                                  <div className="px-2 py-0.5 bg-wv-dark rounded-full text-[10px] font-mono text-wv-muted">
+                                    {scoreLabel}: {scoreValue}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-sm font-semibold text-white mb-1 leading-snug">{p.name}</div>
+                              <div className="text-[11px] text-wv-muted mb-3">{p.brand}</div>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="color-dot" style={{ background: getColorHex(p.color) }} />
+                                  <span className="text-[11px] text-gray-400">{p.color}</span>
+                                </div>
+                                <div className={`text-base font-bold ${isRelevant ? "text-wv-green" : "text-red-400"}`}>
+                                  ${p.price?.toFixed(0)}
+                                </div>
+                              </div>
+                              {p.description && (
+                                <div className="text-[11px] text-wv-muted mt-3 leading-relaxed line-clamp-2">
+                                  {p.description.length > 100 ? p.description.substring(0, 100) + "..." : p.description}
+                                </div>
+                              )}
+                              {smartMode && scoreValue && (
+                                <div className="mt-3 pt-2 border-t border-wv-border/30">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-[10px] text-wv-muted">Relevance</span>
+                                    <span className="text-[10px] font-mono text-wv-green">{(parseFloat(score) * 100).toFixed(0)}%</span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-wv-dark rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${Math.min(parseFloat(score) * 100, 100)}%`,
+                                        background: parseFloat(score) > 0.7 ? "#00d48a" : parseFloat(score) > 0.4 ? "#eab308" : "#f97316",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                              {!smartMode && !isRelevant && (
+                                <div className="mt-2 text-[10px] text-red-400/70 flex items-center gap-1">
+                                  <span>&#x26A0;</span> Over budget
                                 </div>
                               )}
                             </div>
-                            <div className="text-sm font-semibold text-white mb-1 leading-snug">{p.name}</div>
-                            <div className="text-[11px] text-wv-muted mb-3">{p.brand}</div>
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span className="color-dot" style={{ background: getColorHex(p.color) }} />
-                                <span className="text-[11px] text-gray-400">{p.color}</span>
-                              </div>
-                              <div className={`text-base font-bold ${isRelevant ? "text-wv-green" : "text-red-400"}`}>
-                                ${p.price?.toFixed(0)}
-                              </div>
+                          );
+                        })}
+                      </div>
+                      {smartMode && filteredOutCount > 0 && (
+                        <>
+                          <button
+                            onClick={() => setShowHidden(!showHidden)}
+                            className="mt-4 w-full py-2.5 px-4 rounded-xl border border-dashed border-wv-border text-xs text-wv-muted hover:text-white hover:border-wv-green/40 transition cursor-pointer flex items-center justify-center gap-2"
+                          >
+                            <span style={{ transform: showHidden ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", display: "inline-block" }}>&#x25BC;</span>
+                            {showHidden ? "Hide" : "Show"} {filteredOutCount} low-relevance result{filteredOutCount > 1 ? "s" : ""} (below {(RELEVANCE_THRESHOLD * 100).toFixed(0)}%)
+                          </button>
+                          {showHidden && (
+                            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 opacity-50">
+                              {products
+                                .filter((p) => parseFloat(p._additional?.score || "0") < RELEVANCE_THRESHOLD)
+                                .map((p, i) => {
+                                  const score = p._additional?.score || p._additional?.distance || "";
+                                  const scoreLabel = p._additional?.score ? "relevance" : p._additional?.distance ? "distance" : "";
+                                  const scoreValue = score ? parseFloat(score).toFixed(4) : "";
+                                  return (
+                                    <div
+                                      key={`hidden-${i}`}
+                                      className="product-card bg-wv-card rounded-xl p-4 border border-red-500/30 fade-in cursor-pointer"
+                                      style={{ animationDelay: `${i * 50}ms` }}
+                                      onClick={() => setModalProduct(p)}
+                                    >
+                                      <div className="flex items-start justify-between mb-3">
+                                        <div className="text-3xl">{getEmoji(p.category)}</div>
+                                        {scoreValue && (
+                                          <div className="px-2 py-0.5 bg-wv-dark rounded-full text-[10px] font-mono text-red-400/70">
+                                            {scoreLabel}: {scoreValue}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="text-sm font-semibold text-white mb-1 leading-snug">{p.name}</div>
+                                      <div className="text-[11px] text-wv-muted mb-3">{p.brand}</div>
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                          <span className="color-dot" style={{ background: getColorHex(p.color) }} />
+                                          <span className="text-[11px] text-gray-400">{p.color}</span>
+                                        </div>
+                                        <div className="text-base font-bold text-red-400">
+                                          ${p.price?.toFixed(0)}
+                                        </div>
+                                      </div>
+                                      {scoreValue && (
+                                        <div className="mt-3 pt-2 border-t border-wv-border/30">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <span className="text-[10px] text-wv-muted">Relevance</span>
+                                            <span className="text-[10px] font-mono text-red-400">{(parseFloat(score) * 100).toFixed(0)}%</span>
+                                          </div>
+                                          <div className="w-full h-1.5 bg-wv-dark rounded-full overflow-hidden">
+                                            <div
+                                              className="h-full rounded-full"
+                                              style={{
+                                                width: `${Math.min(parseFloat(score) * 100, 100)}%`,
+                                                background: "#f97316",
+                                              }}
+                                            />
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                             </div>
-                            {p.description && (
-                              <div className="text-[11px] text-wv-muted mt-3 leading-relaxed line-clamp-2">
-                                {p.description.length > 100 ? p.description.substring(0, 100) + "..." : p.description}
-                              </div>
-                            )}
-                            {!smartMode && !isRelevant && (
-                              <div className="mt-2 text-[10px] text-red-400/70 flex items-center gap-1">
-                                <span>&#x26A0;</span> Over budget
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                          )}
+                        </>
+                      )}
+                    </>
                   ) : (
                     <div className="text-sm text-wv-muted text-center py-16">
                       {hasSearched.current
-                        ? "No results found"
+                        ? smartMode && products.length > 0 && displayProducts.length === 0
+                          ? `All ${products.length} results were below the relevance threshold (${RELEVANCE_THRESHOLD})`
+                          : "No results found"
                         : <>Press <kbd className="px-2 py-0.5 bg-wv-card rounded text-xs border border-wv-border">Enter</kbd> or click <strong>Search</strong> to find products</>}
                     </div>
                   )}
@@ -623,10 +776,22 @@ export default function Home() {
                           </div>
                           <div className="font-mono text-[11px]">
                             <span className="text-gray-500">filters = </span>
-                            <span className={smartMode && price ? "text-wv-green" : "text-gray-500"}>
-                              {smartMode && price ? `price < ${price}` : "none"}
+                            <span className={smartMode && (price || color) ? "text-wv-green" : "text-gray-500"}>
+                              {smartMode && (price || color) ? [color && `color = "${color}"`, price && `price < ${price}`].filter(Boolean).join(", ") : "none"}
                             </span>
                           </div>
+                          <div className="font-mono text-[11px]">
+                            <span className="text-gray-500">min_relevance = </span>
+                            <span className={smartMode ? "text-wv-green" : "text-gray-500"}>
+                              {smartMode ? RELEVANCE_THRESHOLD : "none"}
+                            </span>
+                          </div>
+                          {smartMode && filteredOutCount > 0 && (
+                            <div className="font-mono text-[11px]">
+                              <span className="text-gray-500">hidden = </span>
+                              <span className="text-amber-400">{filteredOutCount} below threshold</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="px-4 py-3 border-b border-wv-border/50">
@@ -746,6 +911,104 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* ─── CHAT FAB ─── */}
+      <button
+        onClick={() => setChatOpen(!chatOpen)}
+        className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-wv-green text-wv-dark flex items-center justify-center shadow-lg hover:scale-105 transition cursor-pointer"
+        title="RAG Chat Assistant"
+      >
+        {chatOpen ? (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        ) : (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        )}
+      </button>
+
+      {/* ─── CHAT POPUP ─── */}
+      {chatOpen && (
+        <div className="fixed bottom-24 right-6 z-50 w-[380px] max-w-[calc(100vw-3rem)] bg-wv-dark border border-wv-border rounded-2xl shadow-2xl flex flex-col overflow-hidden" style={{ height: "500px" }}>
+          {/* Header */}
+          <div className="px-4 py-3 border-b border-wv-border bg-wv-surface/50 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-wv-green/20 flex items-center justify-center">
+              <WeaviateLogo />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-white">RAG Assistant</div>
+              <div className="text-[10px] text-wv-muted">Powered by Weaviate + Groq</div>
+            </div>
+            <button onClick={() => setChatOpen(false)} className="text-wv-muted hover:text-white cursor-pointer text-lg">&times;</button>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            {chatMessages.length === 0 && (
+              <div className="text-center py-8">
+                <div className="text-3xl mb-3">&#x1F916;</div>
+                <div className="text-sm text-wv-muted mb-1">Hi! Ask me about our products.</div>
+                <div className="text-[11px] text-gray-600">I use vector search to find relevant products, then generate answers with AI.</div>
+                <div className="mt-4 space-y-2">
+                  {["What blue phones do you have?", "Best headphones under $400?", "Compare iPhone 14 vs 15"].map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => { setChatInput(q); }}
+                      className="block w-full text-left px-3 py-2 rounded-lg bg-wv-surface/50 border border-wv-border/50 text-[11px] text-gray-400 hover:text-white hover:border-wv-green/30 transition cursor-pointer"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {chatMessages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-[13px] leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-wv-green text-wv-dark rounded-br-md"
+                      : "bg-wv-surface border border-wv-border text-gray-300 rounded-bl-md"
+                  }`}
+                >
+                  {msg.content}
+                </div>
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="flex justify-start">
+                <div className="bg-wv-surface border border-wv-border px-4 py-3 rounded-2xl rounded-bl-md">
+                  <div className="flex gap-1.5">
+                    <span className="w-2 h-2 bg-wv-muted rounded-full" style={{ animation: "pulse 1s infinite" }} />
+                    <span className="w-2 h-2 bg-wv-muted rounded-full" style={{ animation: "pulse 1s infinite 0.2s" }} />
+                    <span className="w-2 h-2 bg-wv-muted rounded-full" style={{ animation: "pulse 1s infinite 0.4s" }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Input */}
+          <div className="px-3 py-3 border-t border-wv-border">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
+                placeholder="Ask about products..."
+                className="flex-1 px-3.5 py-2.5 bg-wv-surface border border-wv-border rounded-xl text-[13px] text-gray-200 focus:border-wv-green/50 focus:outline-none"
+              />
+              <button
+                onClick={sendChat}
+                disabled={chatLoading || !chatInput.trim()}
+                className="px-3.5 py-2.5 bg-wv-green text-wv-dark rounded-xl font-bold text-xs hover:bg-wv-gl transition cursor-pointer disabled:opacity-40"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

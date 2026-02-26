@@ -24,9 +24,9 @@ Everything runs in Docker Compose with three services:
 
 **Next.js** — single codebase for both the frontend (React, Tailwind) and the API layer. The API routes build GraphQL queries and call Weaviate's `/v1/graphql` endpoint. Having frontend and backend in the same project keeps things simple — one language, one deploy, no CORS headaches.
 
-**Weaviate** — vector database with API key auth, no vectorizer module (BYOV). Stores 23 products with 384-dim embeddings.
+**Weaviate** — vector database with API key auth and the `text2vec-transformers` module enabled. Vectorization happens automatically at ingestion and query time — no manual embedding calls needed. Stores 23 products with 384-dim embeddings.
 
-**TEI** — HuggingFace's Text Embeddings Inference running `all-MiniLM-L6-v2` on CPU. Handles vectorization as a separate service so the app doesn't need ML dependencies.
+**t2v-transformers** — Weaviate's official transformer inference container running `all-MiniLM-L6-v2`. Weaviate delegates vectorization to this service transparently via the `text2vec-transformers` module.
 
 ## Running it
 
@@ -36,7 +36,7 @@ You need Docker and Docker Compose.
 docker compose up --build -d
 ```
 
-Wait a minute for TEI to download the model on first run, then open `http://localhost:3000`.
+Wait for the transformer model to load on first run, then open `http://localhost:3000`.
 
 ### Seeding the database
 
@@ -46,7 +46,7 @@ Hit the "Seed Products" button in the UI, or:
 curl -X POST http://localhost:3000/api/seed
 ```
 
-This creates the `Product` collection in Weaviate and inserts 23 products with pre-computed embeddings.
+This creates the `Product` collection in Weaviate and inserts 23 products. Weaviate vectorizes them automatically using text2vec-transformers.
 
 ### Stopping
 
@@ -65,8 +65,9 @@ next-app/
       page.tsx              → main UI (search, cart, checkout)
       api/search/route.ts   → hybrid search endpoint
       api/seed/route.ts     → DB seeding
+      api/chat/route.ts     → RAG chat (Groq + Weaviate)
       api/meta/route.ts     → Weaviate metadata
     lib/
-      weaviate.ts           → GraphQL query builder + TEI client
+      weaviate.ts           → GraphQL query builder + Weaviate helpers
       products.ts           → seed data (23 products)
 ```

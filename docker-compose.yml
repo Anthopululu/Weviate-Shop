@@ -1,19 +1,20 @@
 services:
   next-app:
-    build:
-      context: ./next-app
-      dockerfile: Dockerfile
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     ports:
       - "3000:3000"
     environment:
       - WEAVIATE_URL=http://weaviate:8080
       - WEAVIATE_API_KEY=my-secret-weaviate-key-2024
-      - TEI_URL=http://tei:80
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - ./next-app:/app
+      - next_node_modules:/app/node_modules
     depends_on:
       weaviate:
         condition: service_healthy
-      tei:
-        condition: service_started
     restart: unless-stopped
 
   weaviate:
@@ -29,10 +30,15 @@ services:
       AUTHORIZATION_ADMINLIST_ENABLED: "true"
       AUTHORIZATION_ADMINLIST_USERS: "admin@weaviate.local"
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
-      DEFAULT_VECTORIZER_MODULE: "none"
+      DEFAULT_VECTORIZER_MODULE: "text2vec-transformers"
+      ENABLE_MODULES: "text2vec-transformers"
+      TRANSFORMERS_INFERENCE_API: "http://t2v-transformers:8080"
       CLUSTER_HOSTNAME: "node1"
     volumes:
       - weaviate_data:/var/lib/weaviate
+    depends_on:
+      t2v-transformers:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v1/.well-known/ready"]
       interval: 5s
@@ -40,21 +46,12 @@ services:
       retries: 15
     restart: unless-stopped
 
-  tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.2
-    command: --model-id sentence-transformers/all-MiniLM-L6-v2 --port 80
-    ports:
-      - "8081:80"
-    volumes:
-      - tei_cache:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-      start_period: 120s
+  t2v-transformers:
+    image: cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2
+    environment:
+      ENABLE_CUDA: "0"
     restart: unless-stopped
 
 volumes:
   weaviate_data:
-  tei_cache:
+  next_node_modules:

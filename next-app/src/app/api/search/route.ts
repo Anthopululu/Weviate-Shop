@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { teiEmbed, weaviateGraphQL, buildSearchQuery } from "@/lib/weaviate";
+import { weaviateGraphQL, buildSearchQuery } from "@/lib/weaviate";
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,12 +9,7 @@ export async function POST(req: NextRequest) {
     const filters = body.filters || {};
     const limit: number = body.limit || 10;
 
-    let vector: number[] | null = null;
-    if (mode !== "bm25") {
-      vector = await teiEmbed(queryText);
-    }
-
-    const graphql = buildSearchQuery(queryText, mode, vector, filters, limit);
+    const graphql = buildSearchQuery(queryText, mode, filters, limit);
 
     const data = await weaviateGraphQL(graphql);
     return NextResponse.json({ results: data, graphql, mode });
