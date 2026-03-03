@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { weaviateGraphQL } from "@/lib/weaviate";
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-
 function esc(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
 export async function POST(req: NextRequest) {
@@ -13,7 +10,19 @@ export async function POST(req: NextRequest) {
     const { message, history } = await req.json();
     if (!message) return NextResponse.json({ error: "No message" }, { status: 400 });
 
-    // 1. Search Weaviate for relevant products using nearText (auto-vectorized)
+    // Build chat history context for the prompt
+    const historyContext = (history || [])
+      .slice(-6)
+      .map((h: { role: string; content: string }) => `${h.role}: ${h.content}`)
+      .join("\\n");
+
+    const prompt = esc(
+      `You are a helpful shopping assistant for Weaviate Shop. Answer using ONLY the product data below. Be concise and friendly (2-4 sentences). Mention product names and prices with $ symbol.${
+        historyContext ? `\n\nChat history:\n${historyContext}` : ""
+      }\n\nCustomer question: ${message}\n\nAnswer based on the products found:`
+    );
+
+    // Single Weaviate query: search + generate via generative-ollama module
     const graphql = `{
       Get {
         Product(
@@ -22,6 +31,16 @@ export async function POST(req: NextRequest) {
         ) {
           name brand color category price description
           _additional { distance }
+          _additional {
+            generate(
+              groupedResult: {
+                task: "${prompt}"
+              }
+            ) {
+              groupedResult
+              error
+            }
+          }
         }
       }
     }`;
@@ -29,62 +48,24 @@ export async function POST(req: NextRequest) {
     const weaviateResult = await weaviateGraphQL(graphql);
     const products = weaviateResult?.data?.Get?.Product || [];
 
-    // 2. Build context from retrieved products
-    const context = products
-      .map(
-        (p: Record<string, unknown>, i: number) =>
-          `${i + 1}. ${p.name} — ${p.brand}, ${p.color}, $${p.price}\n   ${p.description}`
-      )
-      .join("\n");
+    // Extract the generated response
+    const generateResult = products[0]?._additional?.generate;
+    const reply = generateResult?.groupedResult
+      || generateResult?.error
+      || "Sorry, I couldn't generate a response.";
 
-    // 3. Build messages for Groq
-    const systemPrompt = `You are a helpful shopping assistant for Weaviate Shop, an e-commerce demo powered by Weaviate vector search.
-Answer customer questions about products using ONLY the product data provided below. Be concise, friendly, and helpful.
-If the answer isn't in the data, say so honestly. Always mention specific product names and prices when relevant.
-Format prices with $ symbol. Keep responses short (2-4 sentences max).
-
-AVAILABLE PRODUCTS:
-${context || "No products found matching this query."}`;
-
-    const messages = [
-      { role: "system", content: systemPrompt },
-      ...(history || []).slice(-6),
-      { role: "user", content: message },
-    ];
-
-    // 4. Call Groq API
-    if (!GROQ_API_KEY) {
-      return NextResponse.json({
-        reply: `Based on your query, I found these products:\n${context || "No matching products."}`,
-        products,
-      });
-    }
-
-    const groqRes = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages,
-        temperature: 0.7,
-        max_tokens: 300,
-      }),
+    // Clean products for response (remove _additional.generate)
+    const cleanProducts = products.map((p: Record<string, unknown>) => {
+      const additional = p._additional as Record<string, unknown> | undefined;
+      return {
+        ...p,
+        _additional: { distance: additional?.distance },
+      };
     });
 
-    if (!groqRes.ok) {
-      const errText = await groqRes.text();
-      throw new Error(`Groq error ${groqRes.status}: ${errText}`);
-    }
-
-    const groqData = await groqRes.json();
-    const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
-
-    return NextResponse.json({ reply, products });
+    return NextResponse.json({ reply, products: cleanProducts });
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: message }, { status: 500 });
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

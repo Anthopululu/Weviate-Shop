@@ -24,6 +24,10 @@ export async function POST() {
           "text2vec-transformers": {
             vectorizeClassName: false,
           },
+          "generative-ollama": {
+            apiEndpoint: "http://ollama:11434",
+            model: "llama3.2:3b",
+          },
         },
         properties: [
           { name: "name", dataType: ["text"] },
