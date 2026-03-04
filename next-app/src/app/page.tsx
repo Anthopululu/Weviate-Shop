@@ -792,7 +792,9 @@ export default function Home() {
                           {smartMode && filteredOutCount > 0 && (
                             <div className="font-mono text-[11px]">
                               <span className="text-gray-500">hidden = </span>
-                              <span className="text-amber-400">{filteredOutCount} below threshold</span>
+                              <span className="text-amber-400">{filteredOutCount} below threshold
+                      
+                              </span>
                             </div>
                           )}
                         </div>
